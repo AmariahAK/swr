@@ -23,7 +23,10 @@ import {
   revalidateEvents,
   mergeObjects,
   isPromiseLike,
-  noop
+  noop,
+  fulfilledThenable,
+  rejectedThenable,
+  instrumentThenable
 } from '../_internal'
 import type {
   State,
@@ -36,7 +39,8 @@ import type {
   SWRHook,
   RevalidateEvent,
   StateDependencies,
-  GlobalState
+  GlobalState,
+  ReactThenable
 } from '../_internal'
 
 const use =
@@ -149,9 +153,8 @@ export const useSWRHandler = <Data = any, Error = any>(
     strictServerPrefetchWarning
   } = config
 
-  const [EVENT_REVALIDATORS, MUTATION, FETCH, PRELOAD] = SWRGlobalState.get(
-    cache
-  ) as GlobalState
+  const [EVENT_REVALIDATORS, MUTATION, FETCH, PRELOAD, , , , THENABLE] =
+    SWRGlobalState.get(cache) as GlobalState
 
   // `key` is the identifier of the SWR internal state,
   // `fnArg` is the argument/arguments parsed from the key, which will be passed
@@ -809,10 +812,13 @@ export const useSWRHandler = <Data = any, Error = any>(
   // Display debug info in React DevTools.
   useDebugValue(returnedData)
 
-  // In Suspense mode, we can't return the empty `data` state.
-  // If there is an `error`, the `error` needs to be thrown to the error boundary.
-  // If there is no `error`, the `revalidation` promise needs to be thrown to
-  // the suspense boundary.
+  // In Suspense mode, the rendered data always flows through use(): a single
+  // per-key thenable mirrors the current state, fulfilled with the data being
+  // shown, rejected with the current error, or pending on the shared request.
+  // use() is called on every render; only the thenable varies. Skipping use()
+  // based on data availability breaks React's replay tracking:
+  // https://github.com/facebook/react/pull/34030
+  let suspendedData = returnedData
   if (suspense) {
     // SWR should throw when trying to use Suspense on the server with React 18,
     // without providing any fallback data. This causes hydration errors. See:
@@ -828,31 +834,73 @@ export const useSWRHandler = <Data = any, Error = any>(
       unmountedRef.current = false
     }
 
-    const req = PRELOAD[key]
-
-    const mutateReq =
-      !isUndefined(req) && hasKeyButNoData ? boundMutate(req) : resolvedUndef
-    use(mutateReq)
-
-    if (!isUndefined(error) && hasKeyButNoData) {
-      throw error
+    // Requests resolve with a status flag, not the data, so the thenable
+    // React consumes reads the cache they populated once they settle.
+    const readCache = (): Data | undefined => {
+      const state = getCache()
+      if (!isUndefined(state.error)) throw state.error
+      return state.data
     }
+
+    // The thenable is cached per key so React sees a stable identity across
+    // renders and hooks, and it is only replaced when the state it mirrors
+    // changes. A settled request thenable holds the cache data by reference,
+    // so it keeps being reused once the data lands.
+    const entry: ReactThenable<Data | undefined> | undefined = THENABLE[key]
+    let dataThenable: ReactThenable<Data | undefined>
     if (hasKeyButNoData) {
-      // A cache miss for the current key must start its request here.
-      // `returnedData` may be previous data, but it doesn't populate this key's cache.
-      const revalidation = revalidate(WITH_DEDUPE)
-      if (isUndefined(returnedData)) {
-        // No current or previous data is available to render, so suspend on the request.
-        use(revalidation)
+      const req = PRELOAD[key]
+      if (!isUndefined(req)) {
+        // A preloaded key suspends on the preload result reaching the cache.
+        dataThenable =
+          entry && entry.status === 'pending'
+            ? entry
+            : (THENABLE[key] = instrumentThenable(
+                boundMutate(req).then(readCache)
+              ))
+      } else if (!isUndefined(error)) {
+        // A known error with no data rethrows through use() to the nearest
+        // error boundary.
+        dataThenable =
+          entry && entry.status === 'rejected' && entry.reason === error
+            ? entry
+            : (THENABLE[key] = rejectedThenable(error))
+      } else if (!isUndefined(returnedData)) {
+        // Previous data is rendered (keepPreviousData): never suspend, but
+        // the cache miss still needs its request started during render, as
+        // effects don't run while suspended.
+        revalidate(WITH_DEDUPE)
+        dataThenable =
+          entry && entry.status === 'fulfilled' && entry.value === returnedData
+            ? entry
+            : (THENABLE[key] = fulfilledThenable(returnedData))
+      } else {
+        // Nothing to render: suspend on the shared, deduped request.
+        dataThenable =
+          entry && entry.status === 'pending'
+            ? entry
+            : (THENABLE[key] = instrumentThenable(
+                revalidate(WITH_DEDUPE).then(readCache)
+              ))
       }
+    } else {
+      // Data is rendered, or there is no key to await: a fulfilled thenable
+      // of the rendered value unwraps synchronously.
+      dataThenable = isUndefined(returnedData)
+        ? resolvedUndef
+        : entry && entry.status === 'fulfilled' && entry.value === returnedData
+        ? entry
+        : (THENABLE[key] = fulfilledThenable(returnedData))
     }
+    suspendedData = use(dataThenable as Promise<Data | undefined>)
   }
 
   const swrResponse: SWRResponse<Data, Error> = {
     mutate: boundMutate,
     get data() {
       stateDependencies.data = true
-      return returnedData
+      // In Suspense mode the data is whatever use() unwrapped.
+      return suspense ? suspendedData : returnedData
     },
     get error() {
       stateDependencies.error = true

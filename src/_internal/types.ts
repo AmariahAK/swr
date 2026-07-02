@@ -1,5 +1,6 @@
 import type { SWRGlobalConfig } from '../index'
 import type * as revalidateEvents from './events'
+import type { ReactThenable } from './utils/thenable'
 
 /**
  * Global state tuple containing SWR's internal state management structures.
@@ -23,7 +24,9 @@ export type GlobalState = [
   /** Cache setter function with prev/current value comparison */
   (key: string, value: any, prev: any) => void,
   /** Cache subscriber function that returns an unsubscribe function */
-  (key: string, callback: (current: any, prev: any) => void) => () => void
+  (key: string, callback: (current: any, prev: any) => void) => () => void,
+  /** Suspense thenables: per-key thenable representing the rendered data */
+  Record<string, ReactThenable<any>>
 ]
 /**
  * Response type that can be returned by fetcher functions.
