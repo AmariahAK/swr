@@ -1,5 +1,5 @@
 import { screen } from '@testing-library/react'
-import useSWR, { SWRConfig } from 'swr'
+import useSWR, { SWRConfig, useSWRConfig } from 'swr'
 import {
   createKey,
   createResponse,
@@ -197,6 +197,55 @@ describe('useSWR - promise', () => {
       await screen.findByText('loading')
       await act(() => sleep(100)) // wait 100ms until the request inside resolves
       await screen.findByText('data:value,data:value,')
+    }
+  )
+
+  itShouldSkipForReactCanary(
+    'should render cache data written while suspended on a pending fallback promise',
+    async () => {
+      const key = createKey()
+      let resolveFallback: (v: string) => void = () => {}
+      const fallbackPromise = new Promise<string>(r => (resolveFallback = r))
+
+      function Page() {
+        const { data } = useSWR<string>(key, null, {
+          fallbackData: fallbackPromise as any
+        })
+        return <div>data:{data}</div>
+      }
+
+      let mutateFn: any
+      function Mutator() {
+        const { mutate } = useSWRConfig()
+        mutateFn = mutate
+        return null
+      }
+
+      renderWithConfig(
+        <>
+          <Mutator />
+          <Suspense fallback={<div>loading</div>}>
+            <Page />
+          </Suspense>
+        </>
+      )
+      screen.getByText('loading')
+
+      // Populate the cache for the same key while Page sits suspended on the
+      // fallback promise. It never committed, so it has no cache subscription;
+      // only the promise ping retries it.
+      await act(async () => {
+        await mutateFn(key, 'cache data', { revalidate: false })
+      })
+      screen.getByText('loading')
+
+      // Resolving the fallback pings React; the retry render must pick up the
+      // cache data and complete cleanly.
+      await act(async () => {
+        resolveFallback('fallback data')
+        await fallbackPromise
+      })
+      await screen.findByText('data:cache data')
     }
   )
 })

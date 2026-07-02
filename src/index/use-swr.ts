@@ -303,9 +303,19 @@ export const useSWRHandler = <Data = any, Error = any>(
 
   const cachedData = cached.data
 
+  // Once a render suspends on use(), every later render must also call use(),
+  // otherwise React warns and use() slots can misalign across replays:
+  // https://github.com/facebook/react/pull/34030
+  // So this is called on every render; the fulfilled no-op stands in whenever
+  // the fallback promise is not needed, so it never suspends in that case.
+  const fallbackThenable =
+    isUndefined(cachedData) && fallback && isPromiseLike(fallback)
+      ? fallback
+      : resolvedUndef
+  const unwrappedFallback = use(fallbackThenable as Promise<unknown>)
   const data = isUndefined(cachedData)
     ? fallback && isPromiseLike(fallback)
-      ? use(fallback)
+      ? unwrappedFallback
       : fallback
     : cachedData
   const error = cached.error
