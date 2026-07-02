@@ -574,4 +574,86 @@ describe('useSWR - suspense', () => {
       await screen.findByText(`data: ${newKey}`)
     }
   )
+
+  itShouldSkipForReactCanary(
+    'should share one suspended request between hooks with the same key',
+    async () => {
+      const key = createKey()
+      const fetcher = jest.fn(() => createResponse('shared', { delay: 50 }))
+
+      function Section({ id }: { id: string }) {
+        const { data } = useSWR(key, fetcher, { suspense: true })
+        return (
+          <span>
+            {id}: {data},
+          </span>
+        )
+      }
+
+      renderWithConfig(
+        <Suspense fallback={<div>loading</div>}>
+          <Section id="a" />
+          <Section id="b" />
+        </Suspense>
+      )
+
+      screen.getByText('loading')
+      await screen.findByText('a: shared,')
+      screen.getByText('b: shared,')
+      expect(fetcher).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  itShouldSkipForReactCanary(
+    'should throw errors to the boundary even when previous data is kept',
+    async () => {
+      jest.spyOn(console, 'error').mockImplementation(() => {})
+      const originKey = createKey()
+      const newKey = createKey()
+      const fetcher = jest.fn((query: string) =>
+        query === newKey
+          ? createResponse(new Error('error'), { delay: 50 })
+          : createResponse(query, { delay: 50 })
+      )
+      const Result = ({ query }: { query: string }) => {
+        const { data } = useSWR<any>(query, fetcher, {
+          suspense: true,
+          keepPreviousData: true,
+          shouldRetryOnError: false,
+          dedupingInterval: 0
+        })
+        return <div>data: {data}</div>
+      }
+      const App = () => {
+        const [query, setQuery] = useState(originKey)
+        const [, rerender] = useReducer(count => count + 1, 0)
+        return (
+          <>
+            <button onClick={() => setQuery(newKey)}>change</button>
+            <button onClick={() => rerender()}>rerender</button>
+            <ErrorBoundary fallback={<div>error boundary</div>}>
+              <Suspense fallback={<div>loading</div>}>
+                <Result query={query} />
+              </Suspense>
+            </ErrorBoundary>
+          </>
+        )
+      }
+
+      renderWithConfig(<App />)
+
+      await screen.findByText(`data: ${originKey}`)
+
+      // While the new key revalidates, previous data stays rendered.
+      fireEvent.click(screen.getByText('change'))
+      screen.getByText(`data: ${originKey}`)
+
+      // Let the new key settle with an error and no data.
+      await act(() => sleep(100))
+      // On the next render the error wins over the kept previous data and
+      // reaches the boundary.
+      fireEvent.click(screen.getByText('rerender'))
+      await screen.findByText('error boundary')
+    }
+  )
 })

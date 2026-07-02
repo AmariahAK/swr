@@ -331,6 +331,13 @@ export const useSWRHandler = <Data = any, Error = any>(
   // Use a ref to store previously returned data. Use the initial data as its initial value.
   const laggyDataRef = useRef(data)
 
+  // Per-hook cache for the fulfilled data thenable consumed in Suspense mode.
+  // The rendered value can differ between hooks on the same key (fallback,
+  // keepPreviousData), so these are not shared through the per-key store.
+  const fulfilledThenableRef = useRef<
+    ReactThenable<Data | undefined> | undefined
+  >(UNDEFINED)
+
   const returnedData = keepPreviousData
     ? isUndefined(cachedData)
       ? // checking undefined to avoid null being fallback as well
@@ -842,10 +849,22 @@ export const useSWRHandler = <Data = any, Error = any>(
       return state.data
     }
 
-    // The thenable is cached per key so React sees a stable identity across
-    // renders and hooks, and it is only replaced when the state it mirrors
-    // changes. A settled request thenable holds the cache data by reference,
-    // so it keeps being reused once the data lands.
+    // Fulfilled thenables of the rendered value are cached per hook and only
+    // replaced when the value changes, keeping identities stable within a
+    // render episode without hooks on the same key displacing each other.
+    const getFulfilled = () => {
+      const memoized = fulfilledThenableRef.current
+      return memoized &&
+        memoized.status === 'fulfilled' &&
+        memoized.value === returnedData
+        ? memoized
+        : (fulfilledThenableRef.current = fulfilledThenable(returnedData))
+    }
+
+    // Request and error thenables live in the per-key store so all hooks on
+    // the same key suspend on one shared identity; they are only replaced
+    // when the state they mirror changes. A settled request thenable holds
+    // the cache data by reference, so it keeps being reused once data lands.
     const entry: ReactThenable<Data | undefined> | undefined = THENABLE[key]
     let dataThenable: ReactThenable<Data | undefined>
     if (hasKeyButNoData) {
@@ -870,10 +889,7 @@ export const useSWRHandler = <Data = any, Error = any>(
         // the cache miss still needs its request started during render, as
         // effects don't run while suspended.
         revalidate(WITH_DEDUPE)
-        dataThenable =
-          entry && entry.status === 'fulfilled' && entry.value === returnedData
-            ? entry
-            : (THENABLE[key] = fulfilledThenable(returnedData))
+        dataThenable = getFulfilled()
       } else {
         // Nothing to render: suspend on the shared, deduped request.
         dataThenable =
@@ -886,13 +902,14 @@ export const useSWRHandler = <Data = any, Error = any>(
     } else {
       // Data is rendered, or there is no key to await: a fulfilled thenable
       // of the rendered value unwraps synchronously.
-      dataThenable = isUndefined(returnedData)
-        ? resolvedUndef
-        : entry && entry.status === 'fulfilled' && entry.value === returnedData
-        ? entry
-        : (THENABLE[key] = fulfilledThenable(returnedData))
+      dataThenable = isUndefined(returnedData) ? resolvedUndef : getFulfilled()
     }
-    suspendedData = use(dataThenable as Promise<Data | undefined>)
+    const used = use(dataThenable as Promise<Data | undefined>)
+    // Within one suspended episode React resumes from the thenable tracked at
+    // this position, which can be a settled request that resolved without
+    // writing data (discarded by a race). Never let that shadow data that is
+    // available to render.
+    suspendedData = isUndefined(used) ? returnedData : used
   }
 
   const swrResponse: SWRResponse<Data, Error> = {
