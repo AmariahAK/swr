@@ -13,3 +13,5 @@ minimumReleaseAge: 2880
 minimumReleaseAgeExclude:
   - next
   - '@next/*'
+  - typescript
+  - '@typescript/*'

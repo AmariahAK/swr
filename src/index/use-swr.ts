@@ -38,8 +38,12 @@ import type {
   GlobalState
 } from '../_internal'
 
-const use =
-  React.use ||
+// `React.use` and the fallback below have different generic signatures, which
+// TypeScript 7 collapses into a union that it considers non-callable (this used
+// to be silently tolerated). We only ever pass a thenable here (never a
+// context), so we assert the result to `typeof React.use` to expose a single,
+// callable signature regardless of `strict` mode.
+const use = (React.use ||
   // This extra generic is to avoid TypeScript mixing up the generic and JSX sytax
   // and emitting an error.
   // We assume that this is only for the `use(thenable)` case, not `use(context)`.
@@ -72,7 +76,7 @@ const use =
         )
         throw thenable
     }
-  })
+  })) as typeof React.use
 
 const WITH_DEDUPE = { dedupe: true }
 

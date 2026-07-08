@@ -105,7 +105,8 @@
     "build:e2e": "pnpm --filter swr-e2e-site build",
     "dev:e2e": "pnpm --filter swr-e2e-site dev",
     "attw": "attw --pack .",
-    "types:check": "tsc --noEmit",
+    "types:check": "node ./node_modules/typescript/bin/tsc --noEmit",
+    "types:check:ts7": "node ./node_modules/typescript-7/bin/tsc --noEmit",
     "prepublishOnly": "pnpm clean && pnpm build",
     "publish-beta": "pnpm publish --tag beta",
     "format": "oxfmt '**/*.ts' '**/*.tsx'",
@@ -113,7 +114,7 @@
     "lint": "oxlint .",
     "lint:fix": "oxlint . --fix",
     "coverage": "jest --coverage",
-    "test-typing": "tsc -p test/tsconfig.json && tsc -p test/type/tsconfig.json && tsc -p test/type/suspense/tsconfig.json",
+    "test-typing": "node ./node_modules/typescript/bin/tsc -p test/tsconfig.json && node ./node_modules/typescript/bin/tsc -p test/type/tsconfig.json && node ./node_modules/typescript/bin/tsc -p test/type/suspense/tsconfig.json",
     "test": "jest",
     "test:build": "jest --config jest.config.build.js",
     "test:e2e": "playwright test -c test/e2e/playwright.config.ts",
@@ -153,7 +154,8 @@
     "rimraf": "6.1.2",
     "semver": "^7.5.1",
     "swr": "workspace:*",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "typescript-7": "npm:typescript@7.0.2"
   },
   "peerDependencies": {
     "react": "^16.11.0 || ^17.0.0 || ^18.0.0 || ^19.0.0"
